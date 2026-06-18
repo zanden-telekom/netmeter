@@ -252,6 +252,19 @@ padding: 1rem 1.2rem;
 }
 code { font-size: 0.82em; }
 hr { margin: 1.8rem 0; }
+.positioning-statement {
+background: var(--bg-alt);
+border: 1px solid var(--border);
+border-top: 4px solid var(--accent);
+border-radius: 4px;
+padding: 1.4rem 2rem;
+margin: 1.5rem auto 2rem;
+font-size: 1.05rem;
+font-weight: 500;
+color: var(--navy-dark);
+line-height: 1.6;
+text-align: center;
+}
 </style>
 </head>
 <body>
@@ -261,6 +274,17 @@ hr { margin: 1.8rem 0; }
 <p class="subtitle">Technical Overview — Source-Available HTTP/REST
 Middleware for IBM i</p>
 </header>
+<div class="positioning-statement">
+<p>ZCOMX is a secure integration hub for IBM i — a config-driven routing
+layer that connects external clients to IBM i programs, DB2 data, IFS
+files, and external REST APIs through a single authenticated, audited
+endpoint. Any existing IBM i program — RPG, COBOL, CL, or C — becomes a
+JSON/HTTP endpoint and an MCP tool without modification or
+recompilation. Any external REST API becomes reachable through the same
+layer, with credentials held securely on IBM i and every call logged.
+Written in ILE C, hand-optimized for performance, hardened for security,
+and source-available.</p>
+</div>
 <hr />
 <h2 id="the-problem-at-the-boundary">The problem at the boundary</h2>
 <p>IBM i middleware that bridges core systems to external HTTP clients
@@ -353,6 +377,44 @@ support means the same IBM i programs it exposes as REST endpoints are
 immediately available as tools for any AI agent. The AI-forward design
 runs in both directions: AI helps operate and configure ZCOMX, and ZCOMX
 connects AI to IBM i.</p>
+<h2 id="who-does-the-integration-work">Who does the integration
+work</h2>
+<p>The most common response when a CISO asks about replacing middleware
+is: <em>“Our AS/400 developer(s) are fully booked. We don’t have the
+bandwidth for that kind of project.”</em></p>
+<p>With most middleware changes, that objection is legitimate. Replacing
+the layer that calls IBM i programs typically requires someone who
+understands the program interfaces — packed decimal field widths,
+fixed-length parameter layouts, COBOL copybooks — to map those
+interfaces into the new system. That is IBM i developer work, and IBM i
+developers are in short supply.</p>
+<p>ZCOMX is different in one specific way: <strong>the person who
+implements it does not need to be your IBM i developer(s).</strong> They
+need two things:</p>
+<ul>
+<li>A basic understanding of what each program does and what data it
+works with</li>
+<li>Comfort using AI tools</li>
+</ul>
+<p>The rest is handled by AI. ZCOMX ships with a comprehensive context
+document (<code>CLAUDE.md</code>) that gives an AI agent complete
+architectural knowledge of the system. Point an AI agent at the RPG,
+COBOL, or CL source for a program and ask it to generate the ZCOMX
+configuration — it reads the parameter layout, identifies field types,
+selects the appropriate calling convention, and produces a ready-to-use
+configuration block. The IBM i developer(s) do not need to be in the
+room.</p>
+<p>What the implementer actually does: - Identifies which programs need
+to be exposed as HTTP endpoints - Feeds source files to an AI agent -
+Reviews and validates the generated configuration - Tests the
+endpoint</p>
+<p>This is JSON editing and AI-assisted verification — skills any modern
+developer or systems integrator already has, regardless of IBM i
+background. Adding a new endpoint after go-live is a configuration
+change, not a development project.</p>
+<p>The IBM i developer(s)’ role does not change. They continue
+maintaining and extending the programs themselves. The integration layer
+is no longer their problem.</p>
 <h2 id="architecture">Architecture</h2>
 <pre><code>[External Client]
     ↓  HTTPS/TLS
@@ -372,10 +434,51 @@ storage, its own spoolfile, and no shared mutable state. The IBM i
 programs they call are existing production code that has not been
 modified or recompiled.</p>
 <hr />
-<h2 id="what-you-can-expose-as-http-endpoints">What you can expose as
-HTTP endpoints</h2>
-<p>ZCOMX supports six transaction types, covering the full range of IBM
-i program and file operations. All are configured server-side; clients
+<h2 id="ibm-i-as-a-routing-hub">IBM i as a routing hub</h2>
+<p>ZCOMX is more than a REST adapter for existing programs. It is a
+routing layer — one that makes IBM i the integration hub for both
+inbound and outbound calls, all under a single authentication, audit,
+and access-control regime.</p>
+<pre><code>[External Client — web app, mobile, AI agent, partner system]
+    ↓  HTTPS/TLS  (single endpoint)
+[NGINX → ZCOMX worker pool]
+    ├─ CALLPGM / CALLSRVPROC  →  IBM i programs (RPG, COBOL, CL, C)
+    ├─ GETFILE / PUTFILE       →  DB2 for i, IFS, QSYS physical files
+    └─ CALLHTTP                →  External REST APIs (cloud, SaaS, microservices)</code></pre>
+<p>The client sends a JSON request to a single endpoint. ZCOMX looks up
+the transaction name in its configuration and routes the call to
+wherever that transaction is configured to go — an IBM i program, a
+database query, or an external REST API. The client has no knowledge of
+the destination, the credentials in use, or whether the backend is local
+or remote.</p>
+<p><strong>The routing decision is a one-line configuration
+change.</strong> A transaction named <code>GETCUSTOMER</code> can point
+at an RPG program today and an external REST API tomorrow. The client
+code is unchanged. Authentication requirements, IP restrictions, audit
+trail, and duplicate detection apply identically either way. This is not
+a feature added for migration scenarios — it is a structural property of
+how ZCOMX works.</p>
+<p><strong>Credentials stay on IBM i.</strong> External API keys and
+bearer tokens are stored in IBM i <code>*DTAARA</code> objects, not in
+client applications or configuration files accessible outside the
+system. ZCOMX resolves them per-request, zeroes them from memory before
+returning, and logs the call without the credential. A compromised
+client application cannot retrieve the key it is using.</p>
+<p><strong>One audit trail covers everything.</strong> Every transaction
+— whether it calls a local RPG program, queries DB2, or reaches an
+external SaaS API — produces the same <code>ZCOMLOG</code> record:
+authenticated user, source IP, transaction name, target, timing, input,
+output, and success/failure. There are no unlogged calls and no second
+audit system to maintain.</p>
+<p>For organizations in the middle of a workload migration — moving some
+transactions from IBM i to cloud services while others remain
+on-premises — ZCOMX functions as stable ground. The integration boundary
+does not move when the backend does.</p>
+<hr />
+<h2 id="what-zcomx-routes-to">What ZCOMX routes to</h2>
+<p>ZCOMX supports seven transaction types, covering local IBM i
+programs, file and database operations, AI tool calls, and outbound
+calls to external APIs. All routing is configured server-side; clients
 see only a JSON request and a JSON response.</p>
 <p><strong>Program calls (<code>CALLPGM</code>).</strong> Calls any IBM
 i <code>*PGM</code> object — ILE or OPM, written in RPG, COBOL, CL, or
@@ -407,6 +510,14 @@ Procedures that return pre-built JSON strings (common with DB2 JSON
 functions) are supported directly. Type specifications live in
 server-side configuration; the client sends plain JSON field names and
 values.</p>
+<p><strong>Outbound HTTP calls (<code>CALLHTTP</code>).</strong> Makes
+an authenticated, audited outbound HTTP or HTTPS call to an external
+REST API and returns the response. The client POSTs to
+<code>/CallHttp</code> with a transaction name and a payload — ZCOMX
+looks up the configured target URL, resolves any API credentials from
+IBM i <code>*DTAARA</code> objects, makes the call, and returns the
+remote response. The routing hub section above covers the integration
+platform use case in detail.</p>
 <p><strong>File read (<code>GETFILE</code>).</strong> Returns file
 content as a JSON array. Three sources are supported:</p>
 <ul>
@@ -442,6 +553,15 @@ custom schemes — are implemented in readable ILE C. Every authentication
 decision is reachable from a single source file. Authentication
 ordering, cache behavior, credential length limits, and the signed-token
 format are all inspectable.</p>
+<p><strong>Program execution authority.</strong> When profile
+impersonation is enabled, ZCOMX swaps the worker job to the
+authenticated user’s IBM i profile before calling the backend program.
+The called program runs under that user’s object-level authority — its
+access to DB2 tables, IFS files, and IBM i objects is governed by
+standard IBM i security, not a shared service account. This is
+verifiable in the <code>ZAUTHPRF</code> CL module source. Workers run
+under a dedicated service profile by default; impersonation is opt-in
+per authentication scheme.</p>
 <p><strong>Cryptography.</strong> The recommended deployment terminates
 SSL/TLS at NGINX, which typically runs on the IBM i partition itself —
 keeping encrypted traffic decrypted only within the partition boundary.
@@ -547,6 +667,38 @@ separate tool inventory, no additional trust boundary, and no program
 modification required. The LLM is just another authenticated client; the
 audit log entry for an AI-driven call is indistinguishable from one made
 by a web application.</p>
+<hr />
+<h2 id="outbound-routing-callhttp">Outbound routing — CALLHTTP</h2>
+<p>ZCOMX makes outbound HTTP and HTTPS calls via IBM i’s Axis C
+transport library. Headers can carry literal values, IBM i
+<code>*DTAARA</code> references (resolved and zeroed per-request),
+forwarded inbound headers, or ZCOMX-internal context via
+<code>@VAR:</code> built-in variables — session GUID, authenticated
+username, client IP, and transaction name (<code>@VAR:GUID</code>,
+<code>@VAR:USER</code>, <code>@VAR:IP</code>, <code>@VAR:TRX</code>) —
+enabling correlation and identity forwarding to remote APIs without
+client involvement. TLS uses DCM application IDs — standard IBM i
+certificate management, no external keystore. Timeouts are configurable
+server-side; the client has no control over transport parameters.</p>
+<p>Response handling:</p>
+<ul>
+<li><strong>2xx + JSON body</strong> — passed through verbatim with the
+remote status code</li>
+<li><strong>non-2xx + JSON body</strong> — remote JSON embedded in a
+ZCOMX error envelope</li>
+<li><strong>non-JSON body</strong> — ZCOMX error envelope with a body
+snippet for diagnosis</li>
+<li><strong>Transport failure or timeout</strong> — ZCOMX error
+envelope; remote body captured in <code>ZCOMLOG</code> regardless</li>
+</ul>
+<p>Every outbound call is logged in <code>ZCOMLOG</code> with the target
+URL, outbound body, remote response, HTTP status code, and outcome. A
+transport failure is as fully auditable as a successful 200.</p>
+<p>Authentication, IP whitelisting, and duplicate detection apply to the
+caller of <code>/CallHttp</code> in exactly the same way as any other
+ZCOMX transaction. The outbound call is made under ZCOMX’s authority;
+the caller’s credentials govern access to the transaction, not to the
+remote API.</p>
 <hr />
 <h2 id="compliance-alignment">Compliance alignment</h2>
 <p>ZCOMX is designed to support — not replace — your existing compliance
