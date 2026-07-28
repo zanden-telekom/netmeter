@@ -273,6 +273,7 @@ text-align: center;
 <h1 class="title">ZCOMX</h1>
 <p class="subtitle">Technical Overview — Source-Available HTTP/REST
 Middleware for IBM i</p>
+<p class="date">July 2026</p>
 </header>
 <div class="positioning-statement">
 <p>ZCOMX is a secure integration hub for IBM i — a config-driven routing
@@ -415,6 +416,58 @@ change, not a development project.</p>
 <p>The IBM i developer(s)’ role does not change. They continue
 maintaining and extending the programs themselves. The integration layer
 is no longer their problem.</p>
+<p><strong>If source code must not leave the building.</strong> Many
+security-conscious shops will not paste production source into an
+external AI service, and that is a reasonable position. ZCOMX ships
+commands that generate the mapping configuration <strong>on the IBM i
+itself</strong>, sending nothing anywhere:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Command</th>
+<th>Reads</th>
+<th>Produces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GENXMLMAP</code></td>
+<td>RPG, OPM RPG, CL or COBOL source</td>
+<td>Typed-parameter map for <code>CALLPGM</code> /
+<code>CALLSRVPROC</code></td>
+</tr>
+<tr>
+<td><code>GENPCMLMAP</code></td>
+<td>Compiler-emitted PCML</td>
+<td>Map for nested / externally-described data structures</td>
+</tr>
+<tr>
+<td><code>GENSQLMAP</code></td>
+<td>The DB2 catalog</td>
+<td>Map for a stored procedure’s parameters</td>
+</tr>
+</tbody>
+</table>
+<p>Each emits a paste-ready configuration block plus a sample request.
+Where a parameter shape cannot be expressed, the generator refuses it
+explicitly rather than emitting a map that looks correct and is not.</p>
+<p>The AI-assisted route and the on-box route produce the same kind of
+artifact; the choice is a policy decision, not a capability
+difference.</p>
+<p><strong>Verifying a mapping before it goes live.</strong> Because a
+wrong field width fails silently — the call succeeds and returns
+plausible, wrong data — two facilities exist to catch it. A transaction
+can be placed in <strong>preview mode</strong>, where ZCOMX builds the
+program parameter exactly as it normally would and returns it
+<em>instead of calling the program</em>, with per-field offsets to
+compare against the program’s own source. Separately, every map is
+<strong>validated at configuration load</strong>, with defects that
+would silently corrupt a parameter reported by name at startup.</p>
 <h2 id="architecture">Architecture</h2>
 <pre><code>[External Client]
     ↓  HTTPS/TLS
@@ -476,7 +529,7 @@ on-premises — ZCOMX functions as stable ground. The integration boundary
 does not move when the backend does.</p>
 <hr />
 <h2 id="what-zcomx-routes-to">What ZCOMX routes to</h2>
-<p>ZCOMX supports seven transaction types, covering local IBM i
+<p>ZCOMX supports eight transaction types, covering local IBM i
 programs, file and database operations, AI tool calls, and outbound
 calls to external APIs. All routing is configured server-side; clients
 see only a JSON request and a JSON response.</p>
@@ -503,13 +556,22 @@ required.</li>
 (<code>CALLSRVPROC</code>).</strong> Calls a named procedure in an IBM i
 <code>*SRVPGM</code> object. Supports both simple character-buffer
 interfaces and fully typed parameters via XMLSERVICE — packed decimal,
-zoned decimal, binary integers, unsigned integers, boolean, and
-character fields of any declared length, with explicit <code>in</code>,
-<code>out</code>, <code>both</code>, and <code>return</code> directions.
-Procedures that return pre-built JSON strings (common with DB2 JSON
-functions) are supported directly. Type specifications live in
+zoned decimal, binary integers, unsigned integers, boolean, float,
+varchar, and character fields of any declared length, with explicit
+<code>in</code>, <code>out</code>, <code>both</code>, and
+<code>return</code> directions. <strong>Arrays and data structures are
+supported</strong>, including arrays of data structures and nested
+structures. Procedures that return pre-built JSON strings (common with
+DB2 JSON functions) are supported directly. Type specifications live in
 server-side configuration; the client sends plain JSON field names and
 values.</p>
+<p><strong>SQL stored procedure calls (<code>CALLSQL</code>).</strong>
+Calls a DB2 for i stored procedure with typed parameters and explicit
+<code>IN</code>, <code>OUT</code>, and <code>INOUT</code> directions —
+integers, packed decimal, varchar, and CLOB bound natively. A procedure
+that takes a large JSON document as a CLOB parameter and returns both
+result sets and output parameters is a single configured
+transaction.</p>
 <p><strong>Outbound HTTP calls (<code>CALLHTTP</code>).</strong> Makes
 an authenticated, audited outbound HTTP or HTTPS call to an external
 REST API and returns the response. The client POSTs to
@@ -546,13 +608,83 @@ transaction definitions, authentication, and audit trail as REST
 clients. Described further in the AI and MCP integration section
 below.</p>
 <hr />
+<h2 id="federated-identity-external-users-without-ibm-i-profiles">Federated
+identity — external users without IBM i profiles</h2>
+<p>Many organizations authenticate their users through an external
+identity provider — an OAuth/OIDC platform such as Entra ID (Azure AD),
+Okta, Auth0, or an in-house IdP. Those users have no IBM i profile and
+no IBM i password, and their identities (an email address, an opaque
+subject identifier) are not IBM i profile names.</p>
+<p>ZCOMX supports <strong>two patterns</strong> for connecting them, and
+the choice is an architectural one about where the external credential
+is allowed to reach.</p>
+<p><strong>Pattern 1 — Direct JWT validation.</strong> ZCOMX acts as an
+<strong>OAuth 2.0 resource server</strong>. The client presents the
+IdP-issued JWT directly, and ZCOMX validates it in-process: RS256
+signature against the issuer’s published signing keys, plus issuer,
+audience, and expiry checks. No gateway component is required and no
+additional token is minted. This is the simpler topology — fewer moving
+parts, nothing to build or operate between the client and IBM i.</p>
+<p><strong>Pattern 2 — Delegated token exchange (RFC 8693,
+On-Behalf-Of).</strong> A gateway at the edge validates the external
+token and exchanges that identity for a short-lived internal credential
+ZCOMX trusts: the gateway authenticates with its own IBM i credential
+and requests a signed token naming the end-user. ZCOMX then verifies
+only its own token on each request — an HMAC-SHA256 signature and expiry
+check, in microseconds, with no call back to any identity server.</p>
+<p><strong>Choosing between them.</strong> Pattern 1 is fewer
+components. Pattern 2 exists for organizations whose policy is that
+<strong>the AS/400 must never see or validate an internet-facing
+credential</strong> — the gateway is the OAuth relying party and owns
+that relationship, and ZCOMX handles only a credential it issued itself.
+Where that separation is a stated security requirement, the extra
+component is the point rather than overhead.</p>
+<p>Pattern 2’s token is self-describing: it records both the
+<strong>end-user</strong> (the subject the request is performed for) and
+the <strong>gateway</strong> (the actor that authorized it).</p>
+<p>In token-exchange terms, ZCOMX is the <strong>internal resource
+server</strong>, the gateway is the <strong>actor</strong>, and the
+external user is the <strong>subject</strong>. Because ZCOMX records
+both — not just the subject — this is <strong>delegation, not
+impersonation</strong>: the audit trail always shows who an action was
+performed for <em>and</em> which gateway vouched for it. Each
+<code>ZCOMLOG</code> row is self-contained — “performed for
+<code>jane.doe@corp.com</code>, authorized by gateway
+<code>PORTALSVC</code>” — with no cross-referencing required.</p>
+<p><strong>Why it is secure: identity is decoupled from authority — and
+this applies to both patterns.</strong> This is the property that makes
+federated identity safe on IBM i. ZCOMX does not make authorization
+decisions based on the authenticated identity. The job runs under a
+dedicated service account, and what any request can reach is bounded by
+two things — the ZCOMX <strong>configuration</strong> (which programs,
+tables, and directories are exposed at all) and that service account’s
+<strong>IBM i object authority</strong>. The delegated identity
+participates in neither; it is audit metadata. A request naming one
+external user reaches exactly what a request naming any other reaches,
+because the reachable surface never consults the name. Consequently,
+even a forged or stolen delegated identity cannot expand what is
+reachable — the worst case is a wrong name in the audit log, itself
+attributable to the vouching gateway, never a privilege escalation. This
+is the deliberate opposite of an impersonation model, in which the
+identity <em>would</em> drive authority.</p>
+<p><strong>In Pattern 2, the signing key never leaves IBM i.</strong>
+The gateway holds tokens, not the key that signs them — it can present
+tokens, but it cannot mint them. A compromise of the gateway or its
+token cache is therefore bounded to replay of already-issued,
+short-lived, attributable tokens, not theft of a key that could forge
+arbitrary identities. Combined with short token lifetimes, the exposure
+window is small and every use is traceable in <code>ZCOMLOG</code>.</p>
+<hr />
 <h2 id="what-auditors-can-verify">What auditors can verify</h2>
-<p><strong>Authentication.</strong> All supported schemes — Basic/AS400,
-LDAP, static bearer token, HMAC-SHA256 signed bearer, and pluggable
-custom schemes — are implemented in readable ILE C. Every authentication
-decision is reachable from a single source file. Authentication
-ordering, cache behavior, credential length limits, and the signed-token
-format are all inspectable.</p>
+<p><strong>Authentication.</strong> All supported schemes — Basic
+(native IBM i profiles), LDAP (plain or LDAPS), static bearer token,
+HMAC-SHA256 signed bearer, and RS256 JWT validation against an external
+identity provider — are implemented in readable ILE C. Every
+authentication decision is reachable from a single source file.
+Authentication ordering, credential length limits, and the signed-token
+format are all inspectable. The federated-identity delegation model
+described above is built on the same signed-token foundation, so it
+inherits the same readable-in-source verifiability.</p>
 <p><strong>Program execution authority.</strong> When profile
 impersonation is enabled, ZCOMX swaps the worker job to the
 authenticated user’s IBM i profile before calling the backend program.
@@ -585,6 +717,23 @@ input/output payloads. The audit trail cannot be suppressed by client
 behavior; it records rejected requests as completely as successful ones.
 <code>ZCOMLOG</code> can be queried with standard IBM i database tools
 or any SQL client.</p>
+<p><strong>Sensitive-field redaction in the audit trail.</strong> A log
+that records every payload is a compliance asset until it becomes a
+compliance liability — a log holding card numbers or national
+identifiers is itself regulated data. Nominated fields are masked
+<strong>in the log copy only</strong>: the real value still reaches the
+called program and still returns to the client, and only the audit
+record carries the replacement token. Fields are nominated either by
+name — matched at any JSON nesting depth, including inside arrays — or
+marked directly in a mapping definition for requests that have been
+mapped to a fixed-format parameter, where no field names survive to
+match against.</p>
+<p>Redaction <strong>fails closed</strong>. If masking is required but
+cannot be completed, ZCOMX writes the audit field blank and raises an
+alert rather than falling back to the unmasked value — because an
+operator can detect and investigate a missing field, but has no way to
+know that a value which <em>should</em> have been redacted was written
+in the clear.</p>
 <p><strong>Whitelist and access control.</strong> IP allowlists and
 per-transaction <code>restrictedto</code> restrictions are enforced in
 code auditors can read, before any program is called.</p>
@@ -616,10 +765,16 @@ request parsing pipeline</li>
 available to an authenticated caller, plus unauthenticated boundary
 conditions at the HTTP parsing layer.</p>
 <p><strong>What it does not cover:</strong> authentication bypass,
-privilege escalation between users, IBM i CCSID and ILE exception edge
-cases, encryption key management, configuration security, and the
-behavior of customer programs called via CALLPGM. Those areas remain for
-your own assessment.</p>
+privilege escalation between users, ILE exception edge cases, and the
+behavior of customer programs called via <code>CALLPGM</code>. There is
+also <strong>no third-party security attestation</strong> — no SOC 2
+report and no independent penetration test. That is a deliberate
+position rather than an oversight: source availability means your own
+security team can assess the actual code that runs, which is stronger
+evidence than a vendor-commissioned report on code you cannot read.
+Those areas remain for your own assessment, and the source, SBOM,
+findings history and static-analysis register are provided to support
+it.</p>
 <hr />
 <h2 id="how-it-differs-from-the-alternatives">How it differs from the
 alternatives</h2>
@@ -678,8 +833,13 @@ username, client IP, and transaction name (<code>@VAR:GUID</code>,
 <code>@VAR:USER</code>, <code>@VAR:IP</code>, <code>@VAR:TRX</code>) —
 enabling correlation and identity forwarding to remote APIs without
 client involvement. TLS uses DCM application IDs — standard IBM i
-certificate management, no external keystore. Timeouts are configurable
-server-side; the client has no control over transport parameters.</p>
+certificate management, no external keystore. Configure the DCM
+application ID once in <code>server.callhttp.ssl_appid</code>;
+individual HTTPS transactions inherit it automatically. A
+per-transaction <code>ssl.appid</code> overrides the default when
+different certificates are required for different remote APIs. Timeouts
+are configurable server-side; the client has no control over transport
+parameters.</p>
 <p>Response handling:</p>
 <ul>
 <li><strong>2xx + JSON body</strong> — passed through verbatim with the
@@ -714,6 +874,18 @@ APIs are IBM-native; implementation is readable; key handling is
 auditable</li>
 <li><strong>Audit trail completeness</strong> — every transaction
 recorded, including authentication failures and rejected requests</li>
+<li><strong>Sensitive data in logs</strong> — nominated fields are
+redacted in the audit record while the real value still reaches the
+program and the client, supporting PCI-DSS requirements to render
+account numbers unreadable where stored, HIPAA minimum-necessary
+handling, and GDPR data minimisation — without giving up the transaction
+trail those same frameworks require</li>
+<li><strong>A single declaration of exposed surface</strong> — the
+configuration file enumerates every callable endpoint, every field a
+client may send, its validation rules, and which callers are permitted.
+Nothing outside it is reachable, and the runtime reads exactly that
+file, so there is no second artifact that can disagree with what is
+running. Approving the configuration is approving the boundary</li>
 <li><strong>Operational customization</strong> — for internal use,
 organizations can modify and patch ZCOMX without waiting for a vendor
 release cycle</li>
@@ -727,7 +899,13 @@ their own organization. Redistribution and incorporation into other
 products or projects are not permitted.</p>
 <h2 id="contact">Contact</h2>
 <p><strong>Bill Herron</strong> — <a href="mailto:bill.herron@zanden.com">bill.herron@zanden.com</a></p>
-<p>Operations guide, security rationale document, and auditor brief
-available on request.</p>
+<p><strong>Further documentation.</strong> The operations guide,
+security rationale, auditor brief, software bill of materials, security
+findings history, and static-analysis register are available on
+request.</p>
+<p><strong>For developers.</strong> The full API reference — request and
+response formats for every transaction type, with worked examples — is
+published in the source repository and is available once repository
+credentials have been issued.</p>
 </body>
 </html>
